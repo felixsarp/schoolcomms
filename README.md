@@ -28,9 +28,8 @@ exist in the API.
 ## Stack
 
 - **Backend**: Node.js + Express, JWT auth, Postgres storage via `pg`
-  against `DATABASE_URL` (works with Neon, Supabase, or any Postgres
-  provider; tables are created automatically on first request — see
-  `server/src/config/db.js`).
+  against `DATABASE_URL` (a Supabase Postgres project; tables are created
+  automatically on first request — see `server/src/config/db.js`).
 - **Frontend**: React + Vite, plain CSS (no framework lock-in).
 - **File uploads**: `multer` (in-memory) → `@vercel/blob` in production;
   falls back to local disk under `server/uploads/` when no Blob token is
@@ -67,10 +66,10 @@ schoolcomms/
 ## Running locally
 
 You need a Postgres database for local dev too (tables are created for you
-on first request — no migration step). Easiest path: provision one on
-Vercel (see Deploying below), then run `vercel env pull server/.env` from
-the project root — or point `DATABASE_URL` at any Postgres instance you
-already have (Neon, Supabase, local Postgres, etc.).
+on first request — no migration step). Create a free project at
+[supabase.com](https://supabase.com), then grab its connection string from
+Project Settings → Database → Connection string (see the comment in
+`server/.env.example` for which one to use).
 
 ### 1. Backend
 
@@ -103,12 +102,13 @@ The client proxies API calls to `http://localhost:4000` by default (see
 1. Import the repo into Vercel. It auto-detects `vercel.json`
    (client build + `/api` serverless function) — no extra project
    settings needed.
-2. **Storage tab → connect a Postgres database** (e.g. Neon, via the
-   Vercel Marketplace) **→ Connect to Project.** This injects a connection
-   string env var — check what it's named (commonly `DATABASE_URL` or
-   `POSTGRES_URL`) and either use that name directly or copy its value
-   into a `DATABASE_URL` env var, since that's what the app reads
-   (`server/src/config/db.js`).
+2. Create a Supabase project at [supabase.com](https://supabase.com) (or
+   reuse your local-dev one). Under Project Settings → Database →
+   Connection string, copy the **Transaction pooler** string (port 6543,
+   `?pgbouncer=true`) — not the direct connection — since serverless
+   functions open a fresh connection per invocation and would otherwise
+   exhaust Supabase's direct-connection limit. Set it as `DATABASE_URL`
+   under Vercel Project Settings → Environment Variables.
 3. **Storage tab → Create Database → Blob** → Connect to Project. This
    injects `BLOB_READ_WRITE_TOKEN`, needed because Vercel's production
    filesystem is read-only (local-disk uploads only work in dev).
