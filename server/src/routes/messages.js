@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid';
 import { sql, initDb } from '../config/db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { broadcastToRecipients } from '../services/whatsappService.js';
+import { asyncHandler } from '../utils/asyncHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
@@ -60,64 +61,71 @@ function toMessage(row) {
   };
 }
 
-router.get('/', async (req, res) => {
-  await initDb();
-  const { rows } = await sql`
-    SELECT * FROM messages WHERE class_group_id = ${req.params.classId} ORDER BY sent_at DESC
-  `;
-  res.json(rows.map(toMessage));
-});
+router.get(
+  '/',
+  asyncHandler(async (req, res) => {
+    await initDb();
+    const { rows } = await sql`
+      SELECT * FROM messages WHERE class_group_id = ${req.params.classId} ORDER BY sent_at DESC
+    `;
+    res.json(rows.map(toMessage));
+  })
+);
 
 // multipart/form-data: { body?: string, file?: binary }
-router.post('/', upload.single('file'), async (req, res) => {
-  const { body } = req.body || {};
-  const file = req.file;
+router.post(
+  '/',
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    const { body } = req.body || {};
+    const file = req.file;
 
-  if (!body && !file) {
-    return res.status(400).json({ error: 'Provide a text body, a file, or both.' });
-  }
+    if (!body && !file) {
+      return res.status(400).json({ error: 'Provide a text body, a file, or both.' });
+    }
 
-  await initDb();
-  const { rows: classRows } = await sql`SELECT id FROM class_groups WHERE id = ${req.params.classId}`;
-  if (!classRows.length) return res.status(404).json({ error: 'Class not found.' });
+    await initDb();
+    const { rows: classRows } = await sql`SELECT id FROM class_groups WHERE id = ${req.params.classId}`;
+    if (!classRows.length) return res.status(404).json({ error: 'Class not found.' });
 
-  const { rows: parentRows } = await sql`
-    SELECT phone FROM parents WHERE class_group_id = ${req.params.classId}
-  `;
-  const recipients = parentRows.map((p) => p.phone);
+    const { rows: parentRows } = await sql`
+      SELECT phone FROM parents WHERE class_group_id = ${req.params.classId}
+    `;
+    const recipients = parentRows.map((p) => p.phone);
 
-  if (recipients.length === 0) {
-    return res.status(400).json({ error: 'This class has no parent contacts yet.' });
-  }
+    if (recipients.length === 0) {
+      return res.status(400).json({ error: 'This class has no parent contacts yet.' });
+    }
 
-  const type = file ? mediaTypeFromMime(file.mimetype) : 'text';
-  const mediaUrl = file ? await storeFile(file) : undefined;
+    const type = file ? mediaTypeFromMime(file.mimetype) : 'text';
+    const mediaUrl = file ? await storeFile(file) : undefined;
 
-  const results = await broadcastToRecipients({
-    recipients,
-    type,
-    body,
-    mediaUrl,
-    filename: file?.originalname,
-  });
+    const results = await broadcastToRecipients({
+      recipients,
+      type,
+      body,
+      mediaUrl,
+      filename: file?.originalname,
+    });
 
-  const allOk = results.every((r) => r.ok);
-  const id = nanoid();
-  const status = allOk ? 'queued (mock)' : 'partial failure (mock)';
+    const allOk = results.every((r) => r.ok);
+    const id = nanoid();
+    const status = allOk ? 'queued (mock)' : 'partial failure (mock)';
 
-  const { rows } = await sql`
-    INSERT INTO messages (
-      id, class_group_id, type, body, media_url, media_filename,
-      recipient_count, status, sent_by, results
-    ) VALUES (
-      ${id}, ${req.params.classId}, ${type}, ${body || null}, ${mediaUrl || null},
-      ${file?.originalname || null}, ${recipients.length}, ${status},
-      ${req.user.name || req.user.email}, ${JSON.stringify(results)}
-    )
-    RETURNING *
-  `;
+    const { rows } = await sql`
+      INSERT INTO messages (
+        id, class_group_id, type, body, media_url, media_filename,
+        recipient_count, status, sent_by, results
+      ) VALUES (
+        ${id}, ${req.params.classId}, ${type}, ${body || null}, ${mediaUrl || null},
+        ${file?.originalname || null}, ${recipients.length}, ${status},
+        ${req.user.name || req.user.email}, ${JSON.stringify(results)}
+      )
+      RETURNING *
+    `;
 
-  res.status(201).json(toMessage(rows[0]));
-});
+    res.status(201).json(toMessage(rows[0]));
+  })
+);
 
 export default router;
