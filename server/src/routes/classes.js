@@ -1,23 +1,41 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
-import { db } from '../config/db.js';
+import { sql, initDb } from '../config/db.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 router.use(requireAuth);
 
-function classWithCounts(classGroup, allParents) {
-  const parentCount = allParents.filter((p) => p.classGroupId === classGroup.id).length;
-  return { ...classGroup, parentCount };
+function toClass(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    parentCount: Number(row.parent_count ?? 0),
+  };
+}
+
+async function fetchClassWithCount(id) {
+  const { rows } = await sql`
+    SELECT c.*, COUNT(p.id)::int AS parent_count
+    FROM class_groups c
+    LEFT JOIN parents p ON p.class_group_id = c.id
+    WHERE c.id = ${id}
+    GROUP BY c.id
+  `;
+  return rows[0];
 }
 
 router.get('/', async (req, res) => {
-  await db.read();
-  const list = db.data.classGroups
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((c) => classWithCounts(c, db.data.parents));
-  res.json(list);
+  await initDb();
+  const { rows } = await sql`
+    SELECT c.*, COUNT(p.id)::int AS parent_count
+    FROM class_groups c
+    LEFT JOIN parents p ON p.class_group_id = c.id
+    GROUP BY c.id
+    ORDER BY c.name ASC
+  `;
+  res.json(rows.map(toClass));
 });
 
 router.post('/', async (req, res) => {
@@ -26,46 +44,37 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Class name is required.' });
   }
 
-  await db.read();
-  const classGroup = {
-    id: nanoid(),
-    name: name.trim(),
-    createdAt: new Date().toISOString(),
-  };
-  db.data.classGroups.push(classGroup);
-  await db.write();
+  await initDb();
+  const id = nanoid();
+  await sql`INSERT INTO class_groups (id, name) VALUES (${id}, ${name.trim()})`;
 
-  res.status(201).json(classWithCounts(classGroup, db.data.parents));
+  res.status(201).json(toClass(await fetchClassWithCount(id)));
 });
 
 router.get('/:id', async (req, res) => {
-  await db.read();
-  const classGroup = db.data.classGroups.find((c) => c.id === req.params.id);
+  await initDb();
+  const classGroup = await fetchClassWithCount(req.params.id);
   if (!classGroup) return res.status(404).json({ error: 'Class not found.' });
-  res.json(classWithCounts(classGroup, db.data.parents));
+  res.json(toClass(classGroup));
 });
 
 router.put('/:id', async (req, res) => {
   const { name } = req.body || {};
-  await db.read();
-  const classGroup = db.data.classGroups.find((c) => c.id === req.params.id);
-  if (!classGroup) return res.status(404).json({ error: 'Class not found.' });
+  await initDb();
 
-  if (name && name.trim()) classGroup.name = name.trim();
-  await db.write();
-  res.json(classWithCounts(classGroup, db.data.parents));
+  if (name && name.trim()) {
+    await sql`UPDATE class_groups SET name = ${name.trim()} WHERE id = ${req.params.id}`;
+  }
+
+  const classGroup = await fetchClassWithCount(req.params.id);
+  if (!classGroup) return res.status(404).json({ error: 'Class not found.' });
+  res.json(toClass(classGroup));
 });
 
 router.delete('/:id', async (req, res) => {
-  await db.read();
-  const exists = db.data.classGroups.some((c) => c.id === req.params.id);
-  if (!exists) return res.status(404).json({ error: 'Class not found.' });
-
-  db.data.classGroups = db.data.classGroups.filter((c) => c.id !== req.params.id);
-  db.data.parents = db.data.parents.filter((p) => p.classGroupId !== req.params.id);
-  db.data.messages = db.data.messages.filter((m) => m.classGroupId !== req.params.id);
-  await db.write();
-
+  await initDb();
+  const { rowCount } = await sql`DELETE FROM class_groups WHERE id = ${req.params.id}`;
+  if (!rowCount) return res.status(404).json({ error: 'Class not found.' });
   res.status(204).end();
 });
 

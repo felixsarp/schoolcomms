@@ -2,7 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { nanoid } from 'nanoid';
-import { db } from '../config/db.js';
+import { sql, initDb } from '../config/db.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -13,13 +13,14 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  await db.read();
-  const user = db.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+  await initDb();
+  const { rows } = await sql`SELECT * FROM users WHERE lower(email) = lower(${email}) LIMIT 1`;
+  const user = rows[0];
   if (!user) {
     return res.status(401).json({ error: 'Incorrect email or password.' });
   }
 
-  const valid = await bcrypt.compare(password, user.passwordHash);
+  const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) {
     return res.status(401).json({ error: 'Incorrect email or password.' });
   }
@@ -40,18 +41,21 @@ router.post('/users', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Name, email, and password are required.' });
   }
 
-  await db.read();
-  const exists = db.data.users.some((u) => u.email.toLowerCase() === email.toLowerCase());
-  if (exists) {
+  await initDb();
+  const { rows: existing } = await sql`
+    SELECT id FROM users WHERE lower(email) = lower(${email}) LIMIT 1
+  `;
+  if (existing.length) {
     return res.status(409).json({ error: 'A staff account with that email already exists.' });
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = { id: nanoid(), name, email, passwordHash, createdAt: new Date().toISOString() };
-  db.data.users.push(user);
-  await db.write();
+  const id = nanoid();
+  await sql`
+    INSERT INTO users (id, name, email, password_hash) VALUES (${id}, ${name}, ${email}, ${passwordHash})
+  `;
 
-  res.status(201).json({ id: user.id, name: user.name, email: user.email });
+  res.status(201).json({ id, name, email });
 });
 
 router.get('/me', requireAuth, (req, res) => {

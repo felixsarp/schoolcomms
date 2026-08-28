@@ -27,40 +27,56 @@ exist in the API.
 
 ## Stack
 
-- **Backend**: Node.js + Express, JWT auth, JSON file storage via `lowdb`
-  (no database server to install for this initial build — swap for
-  Postgres/MySQL later without changing the route/service layer).
+- **Backend**: Node.js + Express, JWT auth, Postgres storage via `pg`
+  against `DATABASE_URL` (works with Neon, Supabase, or any Postgres
+  provider; tables are created automatically on first request — see
+  `server/src/config/db.js`).
 - **Frontend**: React + Vite, plain CSS (no framework lock-in).
-- **File uploads**: `multer`, stored locally under `server/uploads/`
-  (swap for S3/Cloud Storage later).
+- **File uploads**: `multer` (in-memory) → `@vercel/blob` in production;
+  falls back to local disk under `server/uploads/` when no Blob token is
+  configured, so local dev doesn't require Blob storage.
+- **Deployment**: Vercel. `api/index.js` wraps the Express app as a single
+  serverless function; the client is built as a static site. See
+  `vercel.json`.
 
 ## Project layout
 
 ```
 schoolcomms/
+  api/
+    index.js            Vercel serverless entry (wraps server/src/app.js)
   server/               Express API
     src/
-      config/           env + db setup
+      app.js            Express app (routes, middleware) - no app.listen()
+      index.js           local dev entry point - calls app.listen()
+      config/           Postgres client + schema setup
       middleware/       auth guard
       routes/           auth, classes, parents, messages
       services/         whatsappService.js  <-- stub lives here
       utils/            seeding, helpers
-      data/             db.json (created on first run)
-    uploads/            uploaded media (created on first run)
+    uploads/            local-dev-only uploaded media fallback
   client/               React app (Vite)
     src/
       pages/            Login, Dashboard, ClassDetail
       components/       ParentList, MessageComposer, etc.
       api/              fetch wrapper
+  vercel.json           build + rewrite config
+  package.json          root deps for the api/ function
 ```
 
 ## Running locally
+
+You need a Postgres database for local dev too (tables are created for you
+on first request — no migration step). Easiest path: provision one on
+Vercel (see Deploying below), then run `vercel env pull server/.env` from
+the project root — or point `DATABASE_URL` at any Postgres instance you
+already have (Neon, Supabase, local Postgres, etc.).
 
 ### 1. Backend
 
 ```bash
 cd server
-cp .env.example .env
+cp .env.example .env   # then fill in DATABASE_URL
 npm install
 npm run seed     # creates the first staff login
 npm run dev      # http://localhost:4000
@@ -81,6 +97,28 @@ npm run dev       # http://localhost:5173
 
 The client proxies API calls to `http://localhost:4000` by default (see
 `client/.env.example`).
+
+## Deploying to Vercel
+
+1. Import the repo into Vercel. It auto-detects `vercel.json`
+   (client build + `/api` serverless function) — no extra project
+   settings needed.
+2. **Storage tab → connect a Postgres database** (e.g. Neon, via the
+   Vercel Marketplace) **→ Connect to Project.** This injects a connection
+   string env var — check what it's named (commonly `DATABASE_URL` or
+   `POSTGRES_URL`) and either use that name directly or copy its value
+   into a `DATABASE_URL` env var, since that's what the app reads
+   (`server/src/config/db.js`).
+3. **Storage tab → Create Database → Blob** → Connect to Project. This
+   injects `BLOB_READ_WRITE_TOKEN`, needed because Vercel's production
+   filesystem is read-only (local-disk uploads only work in dev).
+4. Add the remaining env vars from `server/.env.example` under
+   Project Settings → Environment Variables: `JWT_SECRET` (a long random
+   string), `JWT_EXPIRES_IN`, and the seed admin vars if you want to run
+   `npm run seed` against the production database (`vercel env pull` first,
+   then run it locally against that `DATABASE_URL`).
+5. Redeploy. `CLIENT_ORIGIN` isn't needed in production since the client
+   and API share one origin.
 
 ## What's already wired up
 
@@ -103,7 +141,6 @@ The client proxies API calls to `http://localhost:4000` by default (see
   and outbound-initiated messages must use pre-approved "template"
   messages — worth designing deliberately once you're ready to connect
   the real API).
-- Production-grade database, file storage, and deployment config.
 
 ## Next steps when you're ready to connect WhatsApp
 

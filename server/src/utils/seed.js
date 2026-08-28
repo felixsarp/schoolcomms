@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { nanoid } from 'nanoid';
-import { initDb, db } from '../config/db.js';
+import { sql, initDb, pool } from '../config/db.js';
 
 async function seed() {
   await initDb();
@@ -10,26 +10,25 @@ async function seed() {
   const name = process.env.SEED_ADMIN_NAME || 'School Admin';
   const password = process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!';
 
-  const exists = db.data.users.some((u) => u.email.toLowerCase() === email.toLowerCase());
-  if (exists) {
+  const { rows: existing } = await sql`
+    SELECT id FROM users WHERE lower(email) = lower(${email}) LIMIT 1
+  `;
+  if (existing.length) {
     console.log(`Staff account already exists for ${email}. Nothing to do.`);
     return;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  db.data.users.push({
-    id: nanoid(),
-    name,
-    email,
-    passwordHash,
-    createdAt: new Date().toISOString(),
-  });
-  await db.write();
+  await sql`
+    INSERT INTO users (id, name, email, password_hash) VALUES (${nanoid()}, ${name}, ${email}, ${passwordHash})
+  `;
 
   console.log(`Seeded staff login:\n  email: ${email}\n  password: ${password}\n(change this after first login)`);
 }
 
-seed().catch((err) => {
-  console.error('Seed failed:', err);
-  process.exit(1);
-});
+seed()
+  .catch((err) => {
+    console.error('Seed failed:', err);
+    process.exitCode = 1;
+  })
+  .finally(() => pool.end());

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
-import { db } from '../config/db.js';
+import { sql, initDb } from '../config/db.js';
 import { requireAuth } from '../middleware/auth.js';
 
 // mergeParams so we can read :classId from the parent router
@@ -13,12 +13,22 @@ function normalizePhone(raw) {
   return (raw || '').replace(/[\s()-]/g, '');
 }
 
+function toParent(row) {
+  return {
+    id: row.id,
+    classGroupId: row.class_group_id,
+    name: row.name,
+    phone: row.phone,
+    addedAt: row.added_at,
+  };
+}
+
 router.get('/', async (req, res) => {
-  await db.read();
-  const list = db.data.parents
-    .filter((p) => p.classGroupId === req.params.classId)
-    .sort((a, b) => a.name.localeCompare(b.name));
-  res.json(list);
+  await initDb();
+  const { rows } = await sql`
+    SELECT * FROM parents WHERE class_group_id = ${req.params.classId} ORDER BY name ASC
+  `;
+  res.json(rows.map(toParent));
 });
 
 router.post('/', async (req, res) => {
@@ -34,49 +44,54 @@ router.post('/', async (req, res) => {
       .json({ error: 'Phone number must include country code, e.g. +233241234567.' });
   }
 
-  await db.read();
-  const classExists = db.data.classGroups.some((c) => c.id === req.params.classId);
-  if (!classExists) return res.status(404).json({ error: 'Class not found.' });
+  await initDb();
+  const { rows: classRows } = await sql`SELECT id FROM class_groups WHERE id = ${req.params.classId}`;
+  if (!classRows.length) return res.status(404).json({ error: 'Class not found.' });
 
-  const duplicate = db.data.parents.some(
-    (p) => p.classGroupId === req.params.classId && p.phone === cleanPhone
-  );
-  if (duplicate) {
+  const { rows: dupRows } = await sql`
+    SELECT id FROM parents WHERE class_group_id = ${req.params.classId} AND phone = ${cleanPhone}
+  `;
+  if (dupRows.length) {
     return res.status(409).json({ error: 'This phone number is already in the class.' });
   }
 
-  const parent = {
-    id: nanoid(),
-    classGroupId: req.params.classId,
-    name: name.trim(),
-    phone: cleanPhone,
-    addedAt: new Date().toISOString(),
-  };
-  db.data.parents.push(parent);
-  await db.write();
-
-  res.status(201).json(parent);
+  const id = nanoid();
+  const { rows } = await sql`
+    INSERT INTO parents (id, class_group_id, name, phone)
+    VALUES (${id}, ${req.params.classId}, ${name.trim()}, ${cleanPhone})
+    RETURNING *
+  `;
+  res.status(201).json(toParent(rows[0]));
 });
 
 router.put('/:parentId', async (req, res) => {
   const { name, phone } = req.body || {};
-  await db.read();
-  const parent = db.data.parents.find(
-    (p) => p.id === req.params.parentId && p.classGroupId === req.params.classId
-  );
-  if (!parent) return res.status(404).json({ error: 'Parent not found in this class.' });
+  await initDb();
 
-  if (name && name.trim()) parent.name = name.trim();
+  const { rows: existingRows } = await sql`
+    SELECT * FROM parents WHERE id = ${req.params.parentId} AND class_group_id = ${req.params.classId}
+  `;
+  const existing = existingRows[0];
+  if (!existing) return res.status(404).json({ error: 'Parent not found in this class.' });
+
+  let nextName = existing.name;
+  let nextPhone = existing.phone;
+
+  if (name && name.trim()) nextName = name.trim();
   if (phone) {
     const cleanPhone = normalizePhone(phone);
     if (!E164_LOOSE.test(cleanPhone)) {
       return res.status(400).json({ error: 'Phone number looks invalid.' });
     }
-    parent.phone = cleanPhone;
+    nextPhone = cleanPhone;
   }
 
-  await db.write();
-  res.json(parent);
+  const { rows } = await sql`
+    UPDATE parents SET name = ${nextName}, phone = ${nextPhone}
+    WHERE id = ${req.params.parentId}
+    RETURNING *
+  `;
+  res.json(toParent(rows[0]));
 });
 
 // Move a parent to a different class (e.g. graduated to next grade).
@@ -86,29 +101,29 @@ router.post('/:parentId/move', async (req, res) => {
     return res.status(400).json({ error: 'targetClassId is required.' });
   }
 
-  await db.read();
-  const parent = db.data.parents.find(
-    (p) => p.id === req.params.parentId && p.classGroupId === req.params.classId
-  );
-  if (!parent) return res.status(404).json({ error: 'Parent not found in this class.' });
+  await initDb();
+  const { rows: existingRows } = await sql`
+    SELECT id FROM parents WHERE id = ${req.params.parentId} AND class_group_id = ${req.params.classId}
+  `;
+  if (!existingRows.length) return res.status(404).json({ error: 'Parent not found in this class.' });
 
-  const targetExists = db.data.classGroups.some((c) => c.id === targetClassId);
-  if (!targetExists) return res.status(404).json({ error: 'Target class not found.' });
+  const { rows: targetRows } = await sql`SELECT id FROM class_groups WHERE id = ${targetClassId}`;
+  if (!targetRows.length) return res.status(404).json({ error: 'Target class not found.' });
 
-  parent.classGroupId = targetClassId;
-  await db.write();
-  res.json(parent);
+  const { rows } = await sql`
+    UPDATE parents SET class_group_id = ${targetClassId}
+    WHERE id = ${req.params.parentId}
+    RETURNING *
+  `;
+  res.json(toParent(rows[0]));
 });
 
 router.delete('/:parentId', async (req, res) => {
-  await db.read();
-  const exists = db.data.parents.some(
-    (p) => p.id === req.params.parentId && p.classGroupId === req.params.classId
-  );
-  if (!exists) return res.status(404).json({ error: 'Parent not found in this class.' });
-
-  db.data.parents = db.data.parents.filter((p) => p.id !== req.params.parentId);
-  await db.write();
+  await initDb();
+  const { rowCount } = await sql`
+    DELETE FROM parents WHERE id = ${req.params.parentId} AND class_group_id = ${req.params.classId}
+  `;
+  if (!rowCount) return res.status(404).json({ error: 'Parent not found in this class.' });
   res.status(204).end();
 });
 
